@@ -2,7 +2,10 @@ import React, {useState} from 'react';
 import {SafeAreaView, StyleSheet, Text, View, TouchableOpacity, Image, ScrollView, Modal} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
-import Svg, {Rect} from 'react-native-svg';
+import axios from 'axios';
+import * as MediaLibrary from 'expo-media-library';
+import * as VideoThumbnails from 'expo-video-thumbnails';
+import Svg, {Rect, parse} from 'react-native-svg';
 import LottieView from 'lottie-react-native';
 
 const App = () => {
@@ -13,34 +16,96 @@ const App = () => {
 	const [facePred, setFacePred] = useState({});
 	const [selectedFrame, setSelectedFrame] = useState(null);
 	const [pictureVisible, setPictureVisible] = useState(false);
+	const [steps, setSteps] = useState(-1);
+	const stepArray = ['Loading...', 'Extracting frames...', 'Predicting...'];
 
   const getFaces = async() => {
     try {
+			let {status} = await MediaLibrary.requestPermissionsAsync();
+			setLoading(true);
+			let images = [];
+			let tempArray = {};
+			let tempPred = {};
+			let count = 0;
+			let temp = 0;
+			setSteps(0);
+			setSteps(1);
+			if(video[0].assets[0].type == 'image') {
+				images.push(video[0].assets[0].uri);
+			}
+			else {
+				const time = video[0].assets[0].duration;
+        const options = {
+          sortBy: [MediaLibrary.SortBy.creationTime],
+          mediaType: [MediaLibrary.MediaType.video],
+					first: 1000
+        };
+        let { assets } = await MediaLibrary.getAssetsAsync(options);
+        const newVideoUri = assets.find((x) => x.id === video[0].assets[0].assetId)?.uri;
+				for(let t = 0 ; t < time ; t = t + 1000) {
+					const {uri} = await VideoThumbnails.getThumbnailAsync(newVideoUri, {time: t});
+					images.push(uri);
+				}
+			}
+			setSteps(2);
+			for(let i = 0 ; i < images.length ; i++) {
+				uri = images[i];
+				ind = uri.lastIndexOf("/");
+				const name = uri.substring(ind + 1);
+				const formData = new FormData();
+				let headers = {
+					Accept: 'application/json',
+					'Content-Type': 'multipart/form-data',
+				}
+				let data = {
+					name: name,
+					type: 'image/' + uri.substring(ind + 1),
+					uri: uri
+				}
+				formData.append('file', data);
+				const response = await axios({
+					url: 'http://192.168.29.75:5000/predict',
+					method: 'POST',
+					data: formData,
+					headers: headers 
+				});
+				tempArray[uri] = response.data.faces;
+				count += response.data.faces.length;
+				for(const [key, value] of Object.entries(response.data.facePred)) {
+					tempPred[key] = value;
+					temp += value;
+				}
+			}
+			if(count > 0) {
+				setPred((temp * 100 / count).toFixed(2));
+			}
+			setFrames(tempArray);
+			setSteps(-1);
+			setFacePred(tempPred);
 			setLoading(false);
     } catch(err) {
-       	console.log("Unable to load image", err);
+       	console.log(err);
 				setLoading(false);
     }
   };
 
 	const handleChooseVideo = async () => {
 		let permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (permissionResult.granted === false) {
-            alert('Permission to access camera roll is required!');
-            return;
-        }
-        let pickerResult = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.All,
-            base64: true
-        });
-        if (pickerResult.canceled === true) {
-            return;
-        }
-        setVideo([...video, pickerResult]);
+      if (permissionResult.granted === false) {
+        alert('Permission to access camera roll is required!');
+        return;
+      }
+      let pickerResult = await ImagePicker.launchImageLibraryAsync({
+      	mediaTypes: ImagePicker.MediaTypeOptions.All,
+        base64: true
+      });
+      if (pickerResult.canceled === true) {
+        return;
+      }
+      setVideo([...video, pickerResult]);
 	};
 
 	const runTest = () => {
-		setLoading(true);
 		getFaces();
 	};
 
@@ -111,7 +176,7 @@ const App = () => {
 											}}
 											source={require('./assets/16432-scan-face.json')}
 										/>
-										<Text style={styles.subHeading}>Predicting...</Text>
+										<Text style={styles.subHeading}>{stepArray[steps]}</Text>
 									</View>
 								</View>
 							</Modal>
@@ -140,37 +205,37 @@ const App = () => {
 												}}
 												style={{
 													width: 128,
-													height: undefined,
-													aspectRatio: 1,
+													height: 128,
 													resizeMode: 'stretch'
 												}}
 											/>
 											<Svg height={128} width={128} style={{marginTop: -128}}>
 												{value.map((face) => {
+													let Sx = video[0].assets[0].width / 128;
+													let Sy = video[0].assets[0].height / 128;
 													return (
 														<Rect
 															key={face.id}
-															x={face.location.topLeft[0] / 2}
-															y={face.location.topLeft[1] / 2}
-															width={(face.location.bottomRight[0] - face.location.topLeft[0]) / 2}
-															height={(face.location.bottomRight[1] - face.location.topLeft[1]) / 2}
+															x={parseInt(face.x / Sx, 10)}
+															y={parseInt(face.y / Sy, 10)}
+															width={parseInt(face.width / Sx, 10)}
+															height={parseInt(face.height / Sy, 10)}
 															stroke={facePred[face.id] == 1 ? 'green' : 'red'}
-															strokeWidth={1}
-															fill=""
+															strokeWidth={2}
 														/>
 													);
 												})}
 											</Svg>
 										</TouchableOpacity>
 									</View>
-								)
+								);
 							})}
 						</ScrollView>
 					</View>
 				)}
 				{pred !== "" && !loading && (
 					<View style={{}}>
-						<Text style={styles.subHeading}>{video[0].type.toUpperCase()} is {parseFloat(pred).toFixed(2)}% Real</Text>
+						<Text style={styles.subHeading}>{video[0].assets[0].type.toUpperCase()} is {pred}% Real</Text>
 					</View>
 				)}
 				<Modal 
@@ -192,23 +257,23 @@ const App = () => {
 									}}
 									style={{
 										width: 256,
-										height: undefined,
-										aspectRatio: 1,
+										height: 256,
 										resizeMode: 'stretch'
 									}}
 								/>
 								<Svg height={256} width={256} style={{marginTop: -256}}>
 									{selectedFrame !== null && frames[selectedFrame].map((face) => {
+										let Sx = video[0].assets[0].width / 256;
+										let Sy = video[0].assets[0].height / 256;
 										return (
 											<Rect
 												key={face.id}
-												x={face.location.topLeft[0]}
-												y={face.location.topLeft[1]}
-												width={(face.location.bottomRight[0] - face.location.topLeft[0])}
-												height={(face.location.bottomRight[1] - face.location.topLeft[1])}
+												x={parseInt(face.x / Sx, 10)}
+												y={parseInt(face.y / Sy, 10)}
+												width={parseInt(face.width / Sx, 10)}
+												height={parseInt(face.height / Sy, 10)}
 												stroke={facePred[face.id] == 1 ? 'green' : 'red'}
-												strokeWidth={1}
-												fill=""
+												strokeWidth={2}
 											/>
 										);
 									})}
