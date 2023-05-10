@@ -1,57 +1,30 @@
 import React, {useState} from 'react';
-import {SafeAreaView, StyleSheet, Text, View, TouchableOpacity, Image, ScrollView, Modal} from 'react-native';
+import {SafeAreaView, StyleSheet, Text, View, TouchableOpacity, Image, ScrollView, Modal, Alert} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import axios from 'axios';
-import * as MediaLibrary from 'expo-media-library';
-import * as VideoThumbnails from 'expo-video-thumbnails';
-import Svg, {Rect, parse} from 'react-native-svg';
 import LottieView from 'lottie-react-native';
+import * as FileSystem from 'expo-file-system';
 
 const App = () => {
 	const [video, setVideo] = useState([]);
 	const [pred, setPred] = useState("");
-	const [frames, setFrames] = useState({});
 	const [loading, setLoading] = useState(false); 
-	const [facePred, setFacePred] = useState({});
 	const [selectedFrame, setSelectedFrame] = useState(null);
 	const [pictureVisible, setPictureVisible] = useState(false);
-	const [steps, setSteps] = useState(-1);
-	const stepArray = ['Loading...', 'Extracting frames...', 'Predicting...'];
+	const [images, setImages] = useState([])
 
-  const getFaces = async() => {
+	const getFaces = async() => {
+		let tempImages = [];
+		let tempPred = "";
     try {
-			let {status} = await MediaLibrary.requestPermissionsAsync();
-			setLoading(true);
-			let images = [];
-			let tempArray = {};
-			let tempPred = {};
-			let count = 0;
-			let temp = 0;
-			setSteps(0);
-			setSteps(1);
-			if(video[0].assets[0].type == 'image') {
-				images.push(video[0].assets[0].uri);
-			}
-			else {
-				const time = video[0].assets[0].duration;
-        const options = {
-          sortBy: [MediaLibrary.SortBy.creationTime],
-          mediaType: [MediaLibrary.MediaType.video],
-					first: 1000
-        };
-        let { assets } = await MediaLibrary.getAssetsAsync(options);
-        const newVideoUri = assets.find((x) => x.id === video[0].assets[0].assetId)?.uri;
-				for(let t = 0 ; t < time ; t = t + 1000) {
-					const {uri} = await VideoThumbnails.getThumbnailAsync(newVideoUri, {time: t});
-					images.push(uri);
-				}
-			}
-			setSteps(2);
-			for(let i = 0 ; i < images.length ; i++) {
-				uri = images[i];
+			uri = video[0].assets[0].uri;
+			let fs_res = await FileSystem.getInfoAsync(uri);
+			if(fs_res.size / 1000000 < 16.0) {
+				setLoading(true);
 				ind = uri.lastIndexOf("/");
 				const name = uri.substring(ind + 1);
+				ind = uri.lastIndexOf(".")
 				const formData = new FormData();
 				let headers = {
 					Accept: 'application/json',
@@ -59,33 +32,29 @@ const App = () => {
 				}
 				let data = {
 					name: name,
-					type: 'image/' + uri.substring(ind + 1),
+					type: video[0].assets[0].type + "/" + uri.substring(ind + 1),
 					uri: uri
 				}
 				formData.append('file', data);
 				const response = await axios({
-					url: 'http://192.168.29.75:5000/predict',
+					url: 'https://fakerbackend-la3iunu4ha-as.a.run.app/predict',
 					method: 'POST',
 					data: formData,
 					headers: headers 
 				});
-				tempArray[uri] = response.data.faces;
-				count += response.data.faces.length;
-				for(const [key, value] of Object.entries(response.data.facePred)) {
-					tempPred[key] = value;
-					temp += value;
-				}
-			}
-			if(count > 0) {
-				setPred((temp * 100 / count).toFixed(2));
-			}
-			setFrames(tempArray);
-			setSteps(-1);
-			setFacePred(tempPred);
-			setLoading(false);
-    } catch(err) {
-       	console.log(err);
+				response.data.base64.forEach(b64 => tempImages.push(b64));
+				tempPred = response.data["pred"];
+				setPred(tempPred);
+				setImages(tempImages);
 				setLoading(false);
+			}
+			else {
+				Alert.alert('File size larger than 16MB', 'Please pick a different file');
+				reset();
+			}
+    } catch(err) {
+      console.log(err);
+			setLoading(false);
     }
   };
 
@@ -97,7 +66,7 @@ const App = () => {
       }
       let pickerResult = await ImagePicker.launchImageLibraryAsync({
       	mediaTypes: ImagePicker.MediaTypeOptions.All,
-        base64: true
+				quality: 1
       });
       if (pickerResult.canceled === true) {
         return;
@@ -111,8 +80,9 @@ const App = () => {
 
 	const reset = () => {
 		setVideo([]);
-		setFrames([]);
 		setPred("");
+		setImages([]);
+		setLoading(false);
 	}
 
 	const openPictureModal = (id) => {
@@ -132,7 +102,7 @@ const App = () => {
         style={styles.container}>
         <View style={styles.elementContainer}>
           <Text style={styles.heading}>Welcome to Faker</Text>
-          <Text style={styles.subHeading}>Upload a Video to see if it's real</Text>
+          <Text style={styles.subHeading}>Upload a File to see if it's real</Text>
         </View>
 				{video.length === 0 && (
 					<TouchableOpacity style={styles.openButton} onPress={handleChooseVideo}>
@@ -176,7 +146,7 @@ const App = () => {
 											}}
 											source={require('./assets/16432-scan-face.json')}
 										/>
-										<Text style={styles.subHeading}>{stepArray[steps]}</Text>
+										<Text style={styles.subHeading}>Predicting...</Text>
 									</View>
 								</View>
 							</Modal>
@@ -191,41 +161,24 @@ const App = () => {
 						</View>)}
 					</View>
 				)}
-				{!loading && Object.keys(frames).length !== 0 && (
+				{!loading && images.length !== 0 && (
 					<View style={styles.listContainer}>
 						<ScrollView style={{flexDirection: 'row'}} horizontal={true}>
-							{Object.entries(frames).map(([key, value]) => {
+							{images.map((base64, ind) => {
 								return (
-									<View style={{flex: 1, alignItems: 'center', justifyContent: 'center', marginHorizontal: 4}} key={key}>
-										<TouchableOpacity onPress={() => openPictureModal(key)}>
+									<View style={{flex: 1, alignItems: 'center', justifyContent: 'center', marginHorizontal: 4}} key={ind}>
+										<TouchableOpacity onPress={() => openPictureModal(ind)}>
 											<Image
-												key={key}
+												key={ind}
 												source={{
-													uri: key,
+													uri: `data:image/png;base64,${base64}`,
 												}}
 												style={{
 													width: 128,
 													height: 128,
-													resizeMode: 'stretch'
+													resizeMode: 'contain'
 												}}
 											/>
-											<Svg height={128} width={128} style={{marginTop: -128}}>
-												{value.map((face) => {
-													let Sx = video[0].assets[0].width / 128;
-													let Sy = video[0].assets[0].height / 128;
-													return (
-														<Rect
-															key={face.id}
-															x={parseInt(face.x / Sx, 10)}
-															y={parseInt(face.y / Sy, 10)}
-															width={parseInt(face.width / Sx, 10)}
-															height={parseInt(face.height / Sy, 10)}
-															stroke={facePred[face.id] == 1 ? 'green' : 'red'}
-															strokeWidth={2}
-														/>
-													);
-												})}
-											</Svg>
 										</TouchableOpacity>
 									</View>
 								);
@@ -251,33 +204,16 @@ const App = () => {
 						<View style={styles.optionsModalInnerContainer}>
 							<View style={{alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(54, 54, 128, 1)',}}>
 								<Image
-									key={selectedFrame}
+									key={images[selectedFrame]}
 									source={{
-										uri: selectedFrame,
+										uri: `data:image/png;base64,${images[selectedFrame]}`,
 									}}
 									style={{
 										width: 256,
 										height: 256,
-										resizeMode: 'stretch'
+										resizeMode: 'contain'
 									}}
 								/>
-								<Svg height={256} width={256} style={{marginTop: -256}}>
-									{selectedFrame !== null && frames[selectedFrame].map((face) => {
-										let Sx = video[0].assets[0].width / 256;
-										let Sy = video[0].assets[0].height / 256;
-										return (
-											<Rect
-												key={face.id}
-												x={parseInt(face.x / Sx, 10)}
-												y={parseInt(face.y / Sy, 10)}
-												width={parseInt(face.width / Sx, 10)}
-												height={parseInt(face.height / Sy, 10)}
-												stroke={facePred[face.id] == 1 ? 'green' : 'red'}
-												strokeWidth={2}
-											/>
-										);
-									})}
-								</Svg>
 							</View>
 						</View>
 						<View style={{width: '80%',alignItems: 'center',paddingVertical: 5,backgroundColor: 'rgba(54, 54, 128, 1)',borderBottomRightRadius: 50,borderBottomLeftRadius: 50,}}>
